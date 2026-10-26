@@ -4,6 +4,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
+import time
 from typing import Literal
 
 from openai import AsyncOpenAI
@@ -13,9 +15,21 @@ from ..config import settings
 from ..models import (Column, Line, Option, Product, Quote, Text, detect_lang,
                       has_lang, mk)
 
+log = logging.getLogger(__name__)
+
 CHUNK_CHARS = 9000
 MAX_TRANSLATE_RETRIES = 2
-MAX_IMAGES = 16
+
+# Картинки в основном разборе — только когда текста нет совсем (скан).
+# Листы каталога разбираются отдельными мелкими запросами: один большой
+# запрос с полутора десятком картинок думается минутами.
+MAX_SCAN_IMAGES = 6
+MAX_PHOTO_MATCH = 16
+
+# Таймауты: без них openai ждёт 600 с и делает ещё две попытки — бот «висит»
+# больше получаса, а партнёр видит только «⏳ Распознаю…».
+PARSE_TIMEOUT = 150.0
+SMALL_TIMEOUT = 60.0
 
 _client: AsyncOpenAI | None = None
 
@@ -23,9 +37,22 @@ _client: AsyncOpenAI | None = None
 def client() -> AsyncOpenAI:
     global _client
     if _client is None:
-        _client = AsyncOpenAI(api_key=settings.openai_api_key,
-                              base_url=settings.openai_base_url or None)
+        _client = AsyncOpenAI(
+            api_key=settings.openai_api_key,
+            base_url=settings.openai_base_url or None,
+            timeout=PARSE_TIMEOUT,
+            max_retries=1,
+        )
     return _client
+
+
+def _tuning() -> dict:
+    """gpt-5 и o-серия — рассуждающие модели: без ограничения усилий они
+    обдумывают разбор таблицы минутами. Для извлечения данных хватает low."""
+    model = (settings.openai_model or "").lower()
+    if model.startswith(("gpt-5", "o1", "o3", "o4")):
+        return {"reasoning": {"effort": "low"}}
+    return {}
 
 
 # --------------------------------------------------------------- схема разбора
@@ -94,13 +121,13 @@ PARSE_PROMPT = """Ты разбираешь коммерческое предл�
 - Доставку, образцы, прочие расходы отдельной строкой под таблицей — в lines.
 - unit_price — цена за ЕДИНИЦУ товара, не сумма.
 - Логотипы, печати, подписи — НЕ фото товара; photo = 0.
-- Фото привязывай по метке [ФОТО #n], стоящей рядом с позицией.
-- Часть страниц может быть приложена изображениями — перед каждой написано,
-  какой метке [ФОТО #n] она соответствует. Это обычно листы каталога: найди
-  на них модель и привяжи фото к нужной позиции, а полезные характеристики
-  с этих листов добавь в spec соответствующей позиции.
-- Документ бывает смешанным: таблица с ценами текстом, а описания моделей —
-  картинками. Позиции бери из таблицы, картинками их дополняй.
+- Фото привязывай по метке [ФОТО #n], стоящей рядом с позицией в тексте.
+  Если метки идут подряд в конце (это листы каталога без текста) — ставь
+  photo = 0, фото к ним подберут отдельно.
+- Прайс-лист, где каждая строка таблицы — отдельная модель с ценой,
+  разбирай по строкам: одна строка = одна позиция. Колонки конфигурации
+  со значками ● (标配, в базе) и ○ (选配, опция) переноси в spec строками
+  вида «Название колонки: ● в базе» / «Название колонки: ○ опция».
 - Сохрани ВСЕ прочие колонки исходника (срок, вес, объём, доставка, технология,
   пресс-формы, примечание, сведения о заводе) как columns с их заголовками.
 - Если значение колонки одно на всё КП (объединённая ячейка) — whole_quote = true
@@ -109,36 +136,104 @@ PARSE_PROMPT = """Ты разбираешь коммерческое предл�
 """
 
 
+def _image_part(data: bytes) -> dict:
+    b64 = base64.b64encode(data).decode()
+    return {"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"}
+
+
 async def parse_quote_ai(text: str, images: list[tuple[int, bytes]] | None = None,
                          source_file: str = "") -> Quote | None:
     """Разбор КП завода любого вида.
 
-    images — пары (номер метки [ФОТО #n] или 0, байты). Номер подписываем
-    перед картинкой, чтобы модель могла привязать лист каталога к позиции.
+    Картинки сюда идут только если текста нет совсем (скан или фото таблицы).
+    Листы каталога к позициям подбирает match_photos_ai — отдельными мелкими
+    запросами, иначе один запрос с 16 картинками думается минутами.
     """
+    has_text = bool(text.strip())
     content: list[dict] = []
-    if text.strip():
+    if has_text:
         content.append({"type": "input_text", "text": text[:180000]})
-    for mark, data in (images or [])[:MAX_IMAGES]:
-        if mark:
-            content.append({"type": "input_text",
-                            "text": f"Следующее изображение — это [ФОТО #{mark}]."})
-        b64 = base64.b64encode(data).decode()
-        content.append({"type": "input_image",
-                        "image_url": f"data:image/jpeg;base64,{b64}"})
+    else:
+        for _mark, data in (images or [])[:MAX_SCAN_IMAGES]:
+            content.append(_image_part(data))
     if not content:
         return None
 
+    started = time.monotonic()
+    log.info("ИИ-разбор: %d симв текста, %d картинок, модель %s",
+             len(text), 0 if has_text else len(images or []), settings.openai_model)
     resp = await client().responses.parse(
         model=settings.openai_model,
         input=[{"role": "system", "content": PARSE_PROMPT},
                {"role": "user", "content": content}],
         text_format=AiQuote,
+        **_tuning(),
     )
+    log.info("ИИ-разбор занял %.1f с", time.monotonic() - started)
     ai = resp.output_parsed
     if ai is None or not ai.products:
         return None
     return _to_quote(ai, source_file)
+
+
+# --------------------------------------------------------- подбор фото к позициям
+
+class AiPhotoMatch(BaseModel):
+    product_index: int = Field(
+        description="Номер позиции из списка (с 1), к которой относится лист. 0 — ни к одной")
+    model_name: str = Field(description="Модель или название, написанное на листе")
+
+
+PHOTO_PROMPT = """На картинке — лист каталога оборудования.
+Определи, какой позиции из списка он соответствует: сравни модель/название
+на листе с названиями позиций. Отвечай номером позиции из списка.
+Если лист общий (обложка, содержание, реклама) — верни 0."""
+
+
+async def _match_one(mark: int, data: bytes, names: str) -> tuple[int, int]:
+    try:
+        resp = await client().responses.parse(
+            model=settings.openai_model,
+            input=[{"role": "system", "content": PHOTO_PROMPT},
+                   {"role": "user", "content": [
+                       {"type": "input_text", "text": f"Позиции КП:\n{names}"},
+                       _image_part(data)]}],
+            text_format=AiPhotoMatch,
+            timeout=SMALL_TIMEOUT,
+            **_tuning(),
+        )
+    except Exception as exc:
+        log.warning("подбор фото для [ФОТО #%s] не удался: %s", mark, exc)
+        return mark, 0
+    parsed = resp.output_parsed
+    return mark, (parsed.product_index if parsed else 0)
+
+
+async def match_photos_ai(quote: Quote, images: list[tuple[int, bytes]]) -> int:
+    """Привязывает листы каталога к позициям. Возвращает число привязанных фото."""
+    pages = [(m, d) for m, d in images if m][:MAX_PHOTO_MATCH]
+    if not pages or not quote.products:
+        return 0
+    names = "\n".join(
+        f"{i}. {next(iter(p.name.values()), '')}"
+        for i, p in enumerate(quote.products, 1))
+
+    started = time.monotonic()
+    results = await asyncio.gather(
+        *(_match_one(m, d, names) for m, d in pages), return_exceptions=True)
+    matched = 0
+    for item in results:
+        if not isinstance(item, tuple):
+            continue
+        mark, index = item
+        if 1 <= index <= len(quote.products):
+            product = quote.products[index - 1]
+            if not product.photo:          # найденное в тексте не перебиваем
+                product.photo = f"p{mark}.img"
+                matched += 1
+    log.info("подбор фото: %d листов, привязано %d, %.1f с",
+             len(pages), matched, time.monotonic() - started)
+    return matched
 
 
 def _to_quote(ai: AiQuote, source_file: str) -> Quote:
@@ -276,6 +371,7 @@ async def _translate_chunk(items: dict[str, str], lang: str) -> dict[str, str]:
         input=[{"role": "system", "content": _tr_prompt(lang)},
                {"role": "user", "content": json.dumps(items, ensure_ascii=False)}],
         text_format=TrBatch,
+        **_tuning(),
     )
     parsed = resp.output_parsed
     if parsed is None:

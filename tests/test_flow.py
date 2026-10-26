@@ -29,7 +29,7 @@ os.environ["DATA_DIR"] = str(_TMP)
 os.environ.setdefault("OPENAI_API_KEY", "")
 
 from bot import handlers, service, storage  # noqa: E402
-from bot.models import Quote, t  # noqa: E402
+from bot.models import Product, Quote, t  # noqa: E402
 from bot.parsing.extract import extract  # noqa: E402
 from bot.parsing.own_template import parse_own  # noqa: E402
 from bot.render.pdf import render_html  # noqa: E402
@@ -112,6 +112,61 @@ def check_openai_api() -> None:
 
     check(bool(AiQuote.model_json_schema()) and bool(TrBatch.model_json_schema()),
           "схемы AiQuote и TrBatch валидны")
+
+
+async def check_ai_request() -> None:
+    """Один запрос с полутора десятком картинок модель думает минутами —
+    из-за этого бот «висел» 15 минут. Картинки идут в основной разбор
+    только когда текста нет совсем; листы каталога — отдельным проходом."""
+    from types import SimpleNamespace
+
+    from bot.parsing import ai
+
+    sent: list[dict] = []
+
+    class FakeResponses:
+        async def parse(self, **kw):
+            sent.append(kw)
+            fake = ai.AiQuote(
+                currency="CNY", incoterms="", factory_name="Завод",
+                columns=[], whole_quote_values=[],
+                products=[ai.AiProduct(name="CT10K", spec="", photo=0, qty=1,
+                                       unit_price=29400, values=[], options=[])],
+                lines=[], has_total=False, payment_terms="", lead_time="",
+                warranty="")
+            return SimpleNamespace(output_parsed=fake)
+
+    saved = ai._client
+    ai._client = SimpleNamespace(responses=FakeResponses())
+    try:
+        images = [(n, b"\xff\xd8fake") for n in range(1, 17)]
+
+        await ai.parse_quote_ai("Таблица цен: CT10K 29400", images, "price.pdf")
+        content = sent[-1]["input"][1]["content"]
+        imgs = [c for c in content if c["type"] == "input_image"]
+        check(not imgs, f"есть текст → картинки в разбор не идут ({len(imgs)})")
+
+        sent.clear()
+        await ai.parse_quote_ai("", images, "scan.pdf")
+        content = sent[-1]["input"][1]["content"]
+        imgs = [c for c in content if c["type"] == "input_image"]
+        check(0 < len(imgs) <= ai.MAX_SCAN_IMAGES,
+              f"скан без текста → картинки идут, но не больше {ai.MAX_SCAN_IMAGES} ({len(imgs)})")
+
+        check("reasoning" in sent[-1] and sent[-1]["reasoning"]["effort"] == "low",
+              f"для gpt-5 задано низкое усилие рассуждений: {sent[-1].get('reasoning')}")
+
+        sent.clear()
+        quote = Quote(products=[Product(name={"zh": "CT10K"})])
+        matched = await ai.match_photos_ai(quote, images)
+        check(len(sent) == len(images),
+              f"листы каталога разбираются по одному: {len(sent)} запросов на {len(images)} листов")
+        check(all(len([c for c in s["input"][1]["content"]
+                       if c["type"] == "input_image"]) == 1 for s in sent),
+              "в каждом таком запросе ровно одна картинка")
+        check(isinstance(matched, int), "подбор фото отработал без исключений")
+    finally:
+        ai._client = saved
 
 
 def check_pdf_paths() -> None:
@@ -271,6 +326,9 @@ async def main() -> int:
 
     print("\n2b) Чтение PDF и смешанных файлов")
     check_pdf_paths()
+
+    print("\n2c) Запрос в ИИ не раздувается картинками")
+    await check_ai_request()
 
     print("\n3) Кнопки")
     bot = FakeBot()

@@ -297,11 +297,18 @@ async def on_file(message: Message) -> None:
             await status.edit_text(tr("no_ai", lang))
             return
 
+        async def on_step(name: str) -> None:
+            if name == "photos":
+                await status.edit_text(tr("matching_photos", lang))
+
         try:
-            quote, method = await import_file(str(path), filename, uid)
+            quote, method = await import_file(str(path), filename, uid, on_step)
         except Exception as exc:
             log.exception("import failed")
-            await status.edit_text(tr("error", lang, html.escape(str(exc)[:150])))
+            if _is_timeout(exc):
+                await status.edit_text(tr("ai_timeout", lang))
+            else:
+                await status.edit_text(tr("error", lang, html.escape(str(exc)[:150])))
             return
         if quote is None:
             await status.edit_text(tr("parse_failed", lang))
@@ -314,6 +321,11 @@ async def on_file(message: Message) -> None:
         with contextlib.suppress(Exception):
             await status.edit_text(_imported_text(quote, lang))
         await show_card(message.bot, message.chat.id, uid)
+
+
+def _is_timeout(exc: Exception) -> bool:
+    name = type(exc).__name__.lower()
+    return "timeout" in name or "timeout" in str(exc).lower()
 
 
 def _imported_text(quote: Quote, lang: str) -> str:

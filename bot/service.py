@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Awaitable, Callable, Iterable
 
 from .config import settings
 from .models import Quote, has_lang
@@ -51,11 +52,18 @@ def materialize_photos(quote: Quote, ex: Extracted, target_dir: Path) -> None:
         product.photo = resolve(product.photo)
 
 
-async def import_file(path: str, filename: str, uid: int) -> tuple[Quote | None, str]:
+async def import_file(path: str, filename: str, uid: int,
+                      on_step: Callable[[str], Awaitable[None]] | None = None
+                      ) -> tuple[Quote | None, str]:
     """Возвращает (КП, способ разбора): 'own' | 'ai' | ''."""
     ex = await asyncio.to_thread(extract, path, filename)
     if ex.error and not ex.text and not ex.images_for_ai:
         return None, ""
+
+    async def step(name: str) -> None:
+        if on_step:
+            with suppress(Exception):
+                await on_step(name)
 
     quote: Quote | None = None
     method = ""
@@ -65,11 +73,17 @@ async def import_file(path: str, filename: str, uid: int) -> tuple[Quote | None,
             method = "own"
 
     if quote is None and settings.ai_enabled:
-        from .parsing.ai import parse_quote_ai
+        from .parsing.ai import match_photos_ai, parse_quote_ai
 
         quote = await parse_quote_ai(ex.text, ex.images_for_ai, filename)
         if quote:
             method = "ai"
+            # листы каталога привязываем отдельным проходом: мелкие
+            # параллельные запросы вместо одного тяжёлого
+            pages = [(m, d) for m, d in ex.images_for_ai if m]
+            if pages and any(not p.photo for p in quote.products):
+                await step("photos")
+                await match_photos_ai(quote, ex.images_for_ai)
 
     if quote is None:
         return None, ""
