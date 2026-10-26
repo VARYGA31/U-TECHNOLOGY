@@ -16,6 +16,11 @@ from typing import Any
 PHOTO_MARK = "[ФОТО #{}]"
 MIN_PDF_IMAGE_PX = 120
 MAX_SCAN_PAGES = 6
+# Страница без текстового слоя, но с крупной картинкой — это лист каталога.
+# Такие листы надо показать ИИ картинкой, иначе от них остаётся голая метка.
+MAX_AI_IMAGES = 16
+AI_IMAGE_PX = 1200
+PAGE_TEXT_IS_EMPTY = 40
 
 
 @dataclass
@@ -35,7 +40,8 @@ class Extracted:
     photos: dict[int, bytes] = field(default_factory=dict)
     workbook: Any = None
     anchors: list[Anchor] = field(default_factory=list)
-    images_for_ai: list[bytes] = field(default_factory=list)
+    # (номер метки [ФОТО #n] или 0, байты) — картинки, которые уходят в ИИ
+    images_for_ai: list[tuple[int, bytes]] = field(default_factory=list)
     error: str = ""
 
 
@@ -159,21 +165,27 @@ def _from_pdf(path: str) -> Extracted:
         images = []
 
     n = 0
-    marks: dict[tuple[int, float], int] = {}
+    # список, а не словарь: на одной странице бывает несколько картинок с
+    # одинаковой вертикальной позицией, в словаре они затирали бы друг друга
+    marks: list[tuple[int, float, int]] = []
+    images_with_marks: list[tuple[int, float, bytes, int]] = []
     for page_no, top, data in images:
         n += 1
         out.photos[n] = data
-        marks[(page_no, top)] = n
+        marks.append((page_no, top, n))
+        images_with_marks.append((page_no, top, data, n))
 
     lines: list[str] = []
     text_chars = 0
+    page_chars: dict[int, int] = {}
     with pdfplumber.open(path) as pdf:
         pages = pdf.pages
         for pi, page in enumerate(pages):
             lines.append(f"--- Страница {pi + 1} ---")
-            page_marks = sorted([(top, k) for (p, top), k in marks.items() if p == pi])
+            page_marks = sorted([(top, k) for p, top, k in marks if p == pi])
             rows = page.extract_text_lines() or []
             used = set()
+            here = 0
             for line in rows:
                 for top, k in page_marks:
                     if k not in used and top <= line["top"]:
@@ -181,21 +193,52 @@ def _from_pdf(path: str) -> Extracted:
                         used.add(k)
                 text = (line.get("text") or "").strip()
                 if text:
-                    text_chars += len(text)
+                    here += len(text)
                     lines.append(text)
             for top, k in page_marks:
                 if k not in used:
                     lines.append(PHOTO_MARK.format(k))
+            page_chars[pi] = here
+            text_chars += here
     out.text = "\n".join(lines)
 
-    # текстового слоя почти нет — это скан, отдадим страницы ИИ картинками
     if text_chars < 120:
+        # текстового слоя нет вовсе — это скан, отдаём страницы ИИ картинками
         try:
-            out.images_for_ai = _pdf_render(path, MAX_SCAN_PAGES)
+            out.images_for_ai = [(0, data) for data in _pdf_render(path, MAX_SCAN_PAGES)]
             out.kind = "pdf-scan"
         except Exception:
             pass
+        return out
+
+    # Смешанный файл: таблица текстом + листы каталога картинками.
+    # Страницы без текста отдаём ИИ изображениями, иначе от них в тексте
+    # остаётся только метка [ФОТО #n], и привязать её не к чему.
+    picture_pages = [(page_no, n, data) for page_no, _top, data, n in images_with_marks
+                     if page_chars.get(page_no, 0) < PAGE_TEXT_IS_EMPTY]
+    for _page_no, n, data in picture_pages[:MAX_AI_IMAGES]:
+        small = _shrink(data, AI_IMAGE_PX)
+        if small:
+            out.images_for_ai.append((n, small))
     return out
+
+
+def _shrink(data: bytes, max_px: int) -> bytes | None:
+    from PIL import Image
+
+    try:
+        im = Image.open(io.BytesIO(data))
+        im.load()
+        im = im.convert("RGB")
+        if max(im.size) > max_px:
+            ratio = max_px / float(max(im.size))
+            im = im.resize((max(1, int(im.width * ratio)),
+                            max(1, int(im.height * ratio))), Image.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=82, optimize=True)
+        return buf.getvalue()
+    except Exception:
+        return None
 
 
 def _pdf_images(path: str) -> list[tuple[int, float, bytes]]:
@@ -321,4 +364,4 @@ def _from_csv(path: str) -> Extracted:
 def _from_image(path: str) -> Extracted:
     with open(path, "rb") as fh:
         data = fh.read()
-    return Extracted(kind="image", images_for_ai=[data])
+    return Extracted(kind="image", images_for_ai=[(0, data)])

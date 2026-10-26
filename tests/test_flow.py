@@ -114,6 +114,51 @@ def check_openai_api() -> None:
           "схемы AiQuote и TrBatch валидны")
 
 
+def check_pdf_paths() -> None:
+    """PDF: текст, фото товара, и смешанный файл (таблица текстом + листы
+    каталога картинками) — такие страницы должны уходить в ИИ изображениями,
+    иначе от них остаётся только метка [ФОТО #n], которую не к чему привязать."""
+    ex4 = EXAMPLES / "ex4.pdf"
+    if ex4.exists():
+        ex = extract(str(ex4))
+        check(len(ex.text) > 1000, f"ex4.pdf: текст извлечён ({len(ex.text)} симв)")
+        check(len(ex.photos) >= 1, f"ex4.pdf: фото найдено ({len(ex.photos)})")
+        check(all(isinstance(x, tuple) and len(x) == 2 for x in ex.images_for_ai),
+              "images_for_ai — пары (метка, байты)")
+
+    mixed = next((p for p in (ROOT / "examples").glob("*.pdf")
+                  if _is_mixed(p)), None)
+    if mixed is None:
+        print("  ⚠️  смешанного PDF в examples/ нет — проверка пропущена "
+              "(положите каталог завода, чтобы она работала)")
+        return
+    ex = extract(str(mixed))
+    picture_pages = [m for m, _d in ex.images_for_ai if m]
+    check(bool(picture_pages),
+          f"{mixed.name}: листы-картинки уходят в ИИ ({len(picture_pages)} шт)")
+    marks = {int(s.split("#")[1].rstrip("]"))
+             for s in ex.text.split("\n") if s.startswith("[ФОТО #")}
+    check(set(picture_pages) <= marks,
+          "у каждой отправленной картинки есть метка в тексте")
+
+
+def _is_mixed(path: Path) -> bool:
+    """PDF, где есть и текстовые страницы, и страницы-картинки без текста."""
+    try:
+        import pdfplumber
+
+        with pdfplumber.open(str(path)) as pdf:
+            if len(pdf.pages) < 2:
+                return False
+            empty = sum(1 for p in pdf.pages
+                        if len((p.extract_text() or "").strip()) < 40 and p.images)
+            filled = sum(1 for p in pdf.pages
+                         if len((p.extract_text() or "").strip()) >= 40)
+            return empty >= 1 and filled >= 1
+    except Exception:
+        return False
+
+
 def pdf_available() -> bool:
     import importlib
 
@@ -223,6 +268,9 @@ async def main() -> int:
     summary = handlers._imported_text(probe, "ru")
     check("Позиций: 4" in summary and "Получить КП" in summary,
           f"сводка после чтения: {summary.splitlines()[1]}")
+
+    print("\n2b) Чтение PDF и смешанных файлов")
+    check_pdf_paths()
 
     print("\n3) Кнопки")
     bot = FakeBot()

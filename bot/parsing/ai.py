@@ -15,6 +15,7 @@ from ..models import (Column, Line, Option, Product, Quote, Text, detect_lang,
 
 CHUNK_CHARS = 9000
 MAX_TRANSLATE_RETRIES = 2
+MAX_IMAGES = 16
 
 _client: AsyncOpenAI | None = None
 
@@ -94,6 +95,12 @@ PARSE_PROMPT = """Ты разбираешь коммерческое предл�
 - unit_price — цена за ЕДИНИЦУ товара, не сумма.
 - Логотипы, печати, подписи — НЕ фото товара; photo = 0.
 - Фото привязывай по метке [ФОТО #n], стоящей рядом с позицией.
+- Часть страниц может быть приложена изображениями — перед каждой написано,
+  какой метке [ФОТО #n] она соответствует. Это обычно листы каталога: найди
+  на них модель и привяжи фото к нужной позиции, а полезные характеристики
+  с этих листов добавь в spec соответствующей позиции.
+- Документ бывает смешанным: таблица с ценами текстом, а описания моделей —
+  картинками. Позиции бери из таблицы, картинками их дополняй.
 - Сохрани ВСЕ прочие колонки исходника (срок, вес, объём, доставка, технология,
   пресс-формы, примечание, сведения о заводе) как columns с их заголовками.
 - Если значение колонки одно на всё КП (объединённая ячейка) — whole_quote = true
@@ -102,13 +109,20 @@ PARSE_PROMPT = """Ты разбираешь коммерческое предл�
 """
 
 
-async def parse_quote_ai(text: str, images: list[bytes] | None = None,
+async def parse_quote_ai(text: str, images: list[tuple[int, bytes]] | None = None,
                          source_file: str = "") -> Quote | None:
-    """Разбор КП завода любого вида."""
+    """Разбор КП завода любого вида.
+
+    images — пары (номер метки [ФОТО #n] или 0, байты). Номер подписываем
+    перед картинкой, чтобы модель могла привязать лист каталога к позиции.
+    """
     content: list[dict] = []
     if text.strip():
         content.append({"type": "input_text", "text": text[:180000]})
-    for data in (images or [])[:6]:
+    for mark, data in (images or [])[:MAX_IMAGES]:
+        if mark:
+            content.append({"type": "input_text",
+                            "text": f"Следующее изображение — это [ФОТО #{mark}]."})
         b64 = base64.b64encode(data).decode()
         content.append({"type": "input_image",
                         "image_url": f"data:image/jpeg;base64,{b64}"})
