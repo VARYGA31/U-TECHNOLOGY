@@ -211,6 +211,19 @@ async def main() -> int:
     ru_name = t(quote.products[0].name, "ru")
     check(ru_name.startswith("Электротележка"), f"перевод названия: {ru_name[:40]}")
 
+    print("\n2a) Импорт не переводит и не шлёт файлы сам")
+    probe = parse_own(extract(str(cn_path)), cn_path.name)
+    assert probe is not None
+    translated = [p for p in probe.products if "ru" in p.name]
+    check(not translated,
+          "после разбора тексты остаются на языке исходника",
+          f"нашлось переводов: {len(translated)}")
+    check(service.missing_langs(probe, ["ru"]) == ["ru"],
+          "ru помечен как требующий перевода (переведётся по кнопке)")
+    summary = handlers._imported_text(probe, "ru")
+    check("Позиций: 4" in summary and "Получить КП" in summary,
+          f"сводка после чтения: {summary.splitlines()[1]}")
+
     print("\n3) Кнопки")
     bot = FakeBot()
     prefs = storage.load_prefs(UID)

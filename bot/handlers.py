@@ -309,7 +309,17 @@ async def on_file(message: Message) -> None:
 
         await apply_prefs(quote, prefs)
         save_quote(uid, quote)
-        await _deliver(message.bot, message.chat.id, uid, status)
+        # Файлы сразу не собираем и НЕ переводим: сначала партнёр смотрит, что
+        # распозналось, выбирает языки и правит КП. Перевод — по кнопке «Получить КП».
+        with contextlib.suppress(Exception):
+            await status.edit_text(_imported_text(quote, lang))
+        await show_card(message.bot, message.chat.id, uid)
+
+
+def _imported_text(quote: Quote, lang: str) -> str:
+    options = sum(len(p.options) for p in quote.products)
+    return tr("imported", lang, len(quote.products), options,
+              FLAGS.get(quote.src_lang, quote.src_lang), quote.source_currency)
 
 
 def _file_info(message: Message) -> tuple[str, str, int]:
