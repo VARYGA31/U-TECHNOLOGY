@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="{{ lang }}">
+<head>
+<meta charset="utf-8">
+<title>{{ doc_title }} {{ quote.number }}</title>
+<style>
+  @page {
+    size: A4;
+    margin: 36mm 18mm 30mm 22mm;
+    @top-left   { content: element(lhead); }
+    @bottom-left{ content: element(lfoot); }
+  }
+
+  /* Один шрифт на весь документ: латиница, кириллица и иероглифы в одной гарнитуре */
+  html, body {
+    font-family: "Noto Serif CJK SC", "Noto Serif", "Source Han Serif SC", serif;
+    font-size: 10.5pt;
+    color: #000;
+    margin: 0;
+    padding: 0;
+    line-height: 1.35;
+  }
+
+  /* --- колонтитулы на каждой странице --- */
+  #lhead { position: running(lhead); width: 100%; }
+  #lfoot { position: running(lfoot); width: 100%; }
+
+  .head-row { width: 100%; }
+  .head-row td { border: none; padding: 0; vertical-align: middle; }
+  .head-logo img { height: 34px; }
+  .head-name {
+    text-align: right;
+    font-weight: bold;
+    font-size: 12pt;
+    white-space: nowrap;
+  }
+  .head-rule {
+    border-top: 4px solid #000;
+    margin-top: 5px;
+  }
+
+  .foot-row { width: 100%; font-size: 9.5pt; }
+  .foot-row td { border: none; padding: 0; }
+  .foot-right { text-align: right; }
+  a { color: #0000EE; text-decoration: underline; }
+
+  /* --- первая страница --- */
+  h1.title {
+    text-align: center;
+    font-size: 15pt;
+    font-weight: bold;
+    margin: 0 0 10px 0;
+  }
+  .meta { text-align: right; margin-bottom: 6px; }
+  .meta .date { text-decoration: underline; }
+  .client { margin-bottom: 8px; font-weight: bold; }
+
+  table.items {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 6px;
+  }
+  table.items th, table.items td {
+    border: 1px solid #000;
+    padding: 3px 5px;
+    vertical-align: middle;
+    font-size: 10pt;
+  }
+  table.items th {
+    background: #BFBFBF;
+    text-align: center;
+    font-weight: bold;
+  }
+  td.c { text-align: center; }
+  td.r { text-align: right; }
+  td.photo { text-align: center; width: 90px; }
+  td.photo img { max-width: 80px; max-height: 70px; }
+  tr.option td { font-size: 8.8pt; color: #222; }
+  tr.extra td { font-size: 9.2pt; }
+  tr.total td {
+    border: none;
+    font-weight: bold;
+    padding-top: 7px;
+    font-size: 11pt;
+  }
+
+  .terms { margin-top: 14px; }
+  .terms .block { margin-bottom: 8px; }
+  .terms .label { font-weight: bold; }
+  .terms .value { white-space: pre-line; }
+
+  /* --- страница позиции --- */
+  .product-page { page-break-before: always; }
+  .product-page h2 {
+    text-align: center;
+    font-size: 13pt;
+    margin: 0 0 10px 0;
+  }
+  .product-photo { text-align: center; margin: 8px 0 14px 0; }
+  .product-photo img { max-height: 210px; max-width: 70%; }
+  .section { font-weight: bold; margin: 12px 0 6px 0; }
+  .descr { white-space: pre-line; text-align: justify; }
+
+  table.specs {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  table.specs th, table.specs td {
+    border: 1px solid #000;
+    padding: 2px 5px;
+    font-size: 9.5pt;
+    vertical-align: top;
+  }
+  table.specs th {
+    background: #808080;
+    color: #fff;
+    font-weight: bold;
+    text-align: center;
+  }
+  table.specs td.n { text-align: center; width: 28px; }
+  table.specs td.v { width: 46%; }
+</style>
+</head>
+<body>
+
+<div id="lhead">
+  <table class="head-row">
+    <tr>
+      <td class="head-logo">{% if logo %}<img src="{{ logo }}" alt="">{% endif %}</td>
+      <td class="head-name">{{ brand.letterhead_name }}</td>
+    </tr>
+  </table>
+  <div class="head-rule"></div>
+</div>
+
+<div id="lfoot">
+  <table class="foot-row">
+    <tr>
+      <td><a href="mailto:{{ brand.email }}">{{ brand.email }}</a></td>
+      <td class="foot-right"><a href="http://{{ brand.website }}">{{ brand.website }}</a></td>
+    </tr>
+    <tr>
+      <td>{{ brand.phone }}</td>
+      <td class="foot-right"></td>
+    </tr>
+  </table>
+</div>
+
+<h1 class="title">{{ doc_title }}</h1>
+
+<div class="meta"><span class="date">{{ lb.date }}: {{ date_str }}</span></div>
+{% if quote.client %}<div class="client">{{ client_line }}</div>{% endif %}
+
+<table class="items">
+  <thead>
+    <tr>
+      {% if show_no %}<th>{{ lb.no }}</th>{% endif %}
+      {% if show_photo %}<th>{{ lb.photo }}</th>{% endif %}
+      <th>{{ lb.descr }}</th>
+      <th>{{ lb.qty }}</th>
+      <th>{{ price_head }}</th>
+      <th>{{ total_head }}</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for r in rows %}
+    <tr class="{{ r.kind }}">
+      {% if show_no %}<td class="c">{{ r.no }}</td>{% endif %}
+      {% if show_photo %}
+        <td class="photo">{% if r.photo %}<img src="{{ r.photo }}" alt="">{% endif %}</td>
+      {% endif %}
+      <td>{{ r.descr }}</td>
+      <td class="c">{{ r.qty }}</td>
+      <td class="r">{{ r.price }}</td>
+      <td class="r">{{ r.total }}</td>
+    </tr>
+  {% endfor %}
+  {% if total_line %}
+    <tr class="total">
+      {% if show_no %}<td></td>{% endif %}
+      {% if show_photo %}<td></td>{% endif %}
+      <td colspan="2"></td>
+      <td class="r">{{ total_line.label }}</td>
+      <td class="r">{{ total_line.value }}</td>
+    </tr>
+  {% endif %}
+  </tbody>
+</table>
+
+<div class="terms">
+  {% for block in terms %}
+    <div class="block">
+      <div class="label">{{ block.label }}</div>
+      <div class="value">{{ block.value }}</div>
+    </div>
+  {% endfor %}
+  {% for block in merged_blocks %}
+    <div class="block">
+      <div class="label">{{ block.label }}</div>
+      <div class="value">{{ block.value }}</div>
+    </div>
+  {% endfor %}
+</div>
+
+{% for p in pages %}
+<div class="product-page">
+  <h2>{{ p.name }}</h2>
+  {% if p.photo %}<div class="product-photo"><img src="{{ p.photo }}" alt=""></div>{% endif %}
+
+  {% if p.descr %}
+    <div class="section">{{ lb.description }}</div>
+    <div class="descr">{{ p.descr }}</div>
+  {% endif %}
+
+  {% if p.specs %}
+    <div class="section">{{ lb.tech_specs }}</div>
+    <table class="specs">
+      <tr><th>{{ lb.no }}</th><th>{{ lb.param }}</th><th>{{ lb.value }}</th></tr>
+      {% for s in p.specs %}
+        <tr><td class="n">{{ loop.index }}.</td><td>{{ s.name }}</td><td class="v">{{ s.value }}</td></tr>
+      {% endfor %}
+    </table>
+  {% endif %}
+
+  {% if p.options %}
+    <div class="section">{{ lb.options_h }}</div>
+    <table class="specs">
+      <tr>
+        <th>{{ lb.no }}</th><th>{{ lb.descr }}</th>
+        <th>{{ lb.qty }}</th><th>{{ lb.price }}</th><th>{{ lb.total }}</th>
+      </tr>
+      {% for o in p.options %}
+        <tr>
+          <td class="n">{{ loop.index }}.</td>
+          <td>{{ o.text }}</td>
+          <td class="n">{{ o.qty }}</td>
+          <td class="v" style="text-align:right">{{ o.price }}</td>
+          <td class="v" style="text-align:right">{{ o.total }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% endif %}
+
+  {% for s in p.sections %}
+    <div class="section">{{ s.label }}</div>
+    <div class="descr">{{ s.value }}</div>
+  {% endfor %}
+</div>
+{% endfor %}
+
+</body>
+</html>

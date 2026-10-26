@@ -1,0 +1,39 @@
+# Фирменный стиль U-Technology / U-Technology 品牌设置
+# Меняйте значения здесь — бот подхватит их при следующем запуске.
+# 在此修改品牌参数，机器人重启后生效。
+
+# Название компании (используется в Excel и в имени файлов)
+# 公司名称（用于 Excel 和文件名）
+name = "U-Technology Group Limited"
+
+# Путь к логотипу относительно корня проекта / 标志文件路径
+logo = "branding/logo.png"
+
+# --- Цвета / 颜色 ---
+# Заливка шапки таблицы (голубая) / 表头填充色（浅蓝）
+header_color = "#9DC3E6"
+# Полоса под таблицей (синяя) / 表格下方的横条（深蓝）
+bar_color = "#4474A0"
+# Фирменный бирюзовый (логотип, акценты в PDF) / 品牌青绿色（标志、PDF 强调色）
+brand_color = "#3E8F8D"
+
+# --- Шрифты / 字体 ---
+# Заголовки, цифры, латиница / 标题、数字、拉丁字母
+font_title = "Cambria"
+# Названия товаров и параметры (есть иероглифы и кириллица) / 产品名称与参数（含中文和西里尔字母）
+font_text = "微软雅黑"
+
+# Префикс номера КП: UT-ГГГГММДД-NNN / 报价单编号前缀：UT-YYYYMMDD-NNN
+number_prefix = "UT"
+
+# --- Сноска под таблицей в Excel / Excel 表格下方的脚注 ---
+footer_ru = "Цены указаны без экспортной упаковки и доставки, если не указано иное. Предложение действительно 30 дней."
+footer_zh = "除另有说明外，报价不含出口包装及运费。本报价有效期 30 天。"
+footer_en = "Prices exclude export packing and delivery unless stated otherwise. This offer is valid for 30 days."
+
+# --- Фирменный бланк PDF / PDF 信头 ---
+# Название в шапке бланка / 信头公司名称
+letterhead_name = "U-Technology Group Co., Ltd"
+email = "info@u-techgroup.ru"
+website = "www.u-techgroup.ru"
+phone = "+7 (499)-686-88-68"
