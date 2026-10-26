@@ -16,7 +16,7 @@ from aiogram.types import (CallbackQuery, FSInputFile, InlineKeyboardButton,
 from .config import settings
 from .i18n import FLAGS, tr
 from .models import (BASE_ORDER, Column, Line, Option, Product, Quote,
-                     parse_number, t)
+                     has_lang, parse_number, t)
 from .rates import cross_rate
 from .render import labels as L
 from .service import (apply_prefs, build_files, import_file, missing_langs,
@@ -187,6 +187,55 @@ async def cmd_card(message: Message) -> None:
     await show_card(message.bot, message.chat.id, uid)
 
 
+@router.message(Command("diag"))
+async def cmd_diag(message: Message) -> None:
+    """Проверка настроек: ключ, модель, доступность Responses API, живой вызов."""
+    uid = message.from_user.id
+    if not allowed(uid):
+        await deny(message)
+        return
+    lines = [tr("diag", ui_lang(load_prefs(uid))), ""]
+    lines.append(f"OPENAI_API_KEY: {'задан' if settings.ai_enabled else 'НЕ задан'}")
+    lines.append(f"Модель: {settings.openai_model}")
+    lines.append(f"OPENAI_BASE_URL: {settings.openai_base_url or '—'}")
+
+    try:
+        import openai
+
+        lines.append(f"openai: {openai.__version__}")
+    except Exception as exc:
+        lines.append(f"openai: ошибка импорта — {exc}")
+
+    if settings.ai_enabled:
+        from .parsing.ai import client
+
+        has_api = hasattr(client(), "responses") and hasattr(client().responses, "parse")
+        lines.append(f"Responses API: {'есть' if has_api else 'НЕТ — обновите openai'}")
+        try:
+            from .models import mk
+            from .parsing.ai import translate_quote
+
+            probe = Quote(products=[Product(name=mk("电动搬运车"))])
+            await translate_quote(probe, "ru")
+            got = t(probe.products[0].name, "ru")
+            lines.append(f"Тестовый перевод «电动搬运车» → «{got}»")
+            lines.append("Итог: перевод работает ✅" if got != "电动搬运车"
+                         else "Итог: перевод НЕ работает ❌")
+        except Exception as exc:
+            lines.append(f"Тестовый перевод: ошибка — {str(exc)[:250]}")
+            lines.append("Итог: перевод НЕ работает ❌")
+
+    try:
+        import importlib
+
+        importlib.import_module("weasyprint")
+        lines.append("PDF (WeasyPrint): готов ✅")
+    except Exception as exc:
+        lines.append(f"PDF (WeasyPrint): НЕ работает — {str(exc)[:120]}")
+
+    await message.answer("\n".join(lines))
+
+
 @router.message(Command("new"))
 async def cmd_new(message: Message) -> None:
     uid = message.from_user.id
@@ -310,16 +359,27 @@ async def _deliver(bot: Bot, chat_id: int, uid: int, status: Message | None = No
         return
     langs = [x for x in prefs.get("langs", ["ru"]) if x in DOC_LANGS] or ["ru"]
 
+    # Перевод обязан быть заметным: если он не сработал, партнёр должен узнать
+    # об этом здесь, а не обнаружить иероглифы в готовом КП.
     need = missing_langs(quote, langs)
-    if need and settings.ai_enabled:
+    if need and not settings.ai_enabled:
+        await bot.send_message(chat_id, tr("tr_no_key", lang))
+    elif need:
         if status:
             with contextlib.suppress(Exception):
                 await status.edit_text(tr("translating", lang))
         try:
             await translate_to(quote, need)
             save_quote(uid, quote)
-        except Exception:
+        except Exception as exc:
             log.exception("translate failed")
+            await bot.send_message(
+                chat_id, tr("tr_failed", lang, html.escape(str(exc)[:200])))
+        else:
+            left = sum(1 for x in quote.all_texts()
+                       for code in langs if not has_lang(x, code))
+            if left:
+                await bot.send_message(chat_id, tr("tr_partial", lang, left))
 
     if status:
         with contextlib.suppress(Exception):

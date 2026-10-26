@@ -17,6 +17,7 @@ async def set_commands(bot: Bot) -> None:
         BotCommand(command="start", description="Начать / 开始"),
         BotCommand(command="card", description="Карточка КП / 报价单卡片"),
         BotCommand(command="new", description="Новое КП / 新报价单"),
+        BotCommand(command="diag", description="Проверка настроек / 配置检查"),
     ])
 
 

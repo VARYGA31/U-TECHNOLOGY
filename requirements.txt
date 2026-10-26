@@ -1,7 +1,9 @@
-# Версии, на которых прогонялись тесты (tests/test_flow.py — 35 проверок).
-# aiogram сам тянет совместимый aiohttp (<3.11), отдельно его не закрепляем.
+# Версии, на которых прогонялись тесты (tests/test_flow.py).
+# openai: нужен Responses API (client.responses.parse с text_format=).
+# В версиях младше 1.66 его НЕТ — перевод и разбор чужих КП молча падали.
+# Нижняя граница зафиксирована жёстко, см. tests/test_flow.py::check_openai_api.
+openai>=1.99,<4
 aiogram==3.13.1
-openai==1.54.4
 pydantic==2.9.2
 openpyxl==3.1.5
 pdfplumber==0.11.10

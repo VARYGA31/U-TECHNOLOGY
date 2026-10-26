@@ -87,6 +87,33 @@ class FakeBot:
 
 # --------------------------------------------------------------- заглушка перевода
 
+def check_openai_api() -> None:
+    """Защита от регрессии: в openai < 1.66 нет Responses API, и перевод
+    молча падал с AttributeError — КП уходило без перевода. Сети не требует."""
+    import inspect
+
+    import openai
+    from openai import AsyncOpenAI
+
+    client = AsyncOpenAI(api_key="test-key-not-used")
+    has_responses = hasattr(client, "responses")
+    check(has_responses, f"openai {openai.__version__}: есть client.responses",
+          "нужен openai>=1.99 — иначе перевод падает с AttributeError")
+    if not has_responses:
+        return
+    has_parse = hasattr(client.responses, "parse")
+    check(has_parse, "есть client.responses.parse")
+    if has_parse:
+        params = inspect.signature(client.responses.parse).parameters
+        check("text_format" in params, "parse принимает text_format=")
+
+    # структурные схемы разбора и перевода должны собираться
+    from bot.parsing.ai import AiQuote, TrBatch
+
+    check(bool(AiQuote.model_json_schema()) and bool(TrBatch.model_json_schema()),
+          "схемы AiQuote и TrBatch валидны")
+
+
 def pdf_available() -> bool:
     import importlib
 
@@ -137,6 +164,9 @@ async def main() -> int:
         if not p.exists():
             print("нет файла:", p)
             return 2
+
+    print("\n0) Совместимость OpenAI SDK")
+    check_openai_api()
 
     print("\n1) Импорт kp_cn.xlsx и наценка 6%")
     ex = extract(str(cn_path))
