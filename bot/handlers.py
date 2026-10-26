@@ -14,7 +14,7 @@ from aiogram.types import (CallbackQuery, FSInputFile, InlineKeyboardButton,
                            InlineKeyboardMarkup, InputMediaDocument, Message)
 
 from .config import settings
-from .i18n import FLAGS, tr
+from .i18n import FLAGS, WELCOME, tr
 from .models import (BASE_ORDER, Column, Line, Option, Product, Quote,
                      has_lang, parse_number, t)
 from .rates import cross_rate
@@ -172,7 +172,7 @@ async def cmd_start(message: Message) -> None:
     prefs["ui_lang"] = "zh" if tg_lang.startswith("zh") else "ru"
     save_prefs(uid, prefs)
     await message.answer(
-        tr("start", ui_lang(prefs)), parse_mode="HTML",
+        WELCOME, parse_mode="HTML",
         reply_markup=kb([[btn("🇷🇺 Русский", "ui:ru"), btn("🇨🇳 中文", "ui:zh")]]))
     if not settings.ai_enabled:
         await message.answer(tr("no_ai", ui_lang(prefs)))
