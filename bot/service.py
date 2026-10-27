@@ -157,13 +157,16 @@ def missing_langs(quote: Quote, langs: Iterable[str]) -> list[str]:
     return out
 
 
-async def translate_to(quote: Quote, langs: Iterable[str]) -> None:
+async def translate_to(quote: Quote, langs: Iterable[str]) -> int:
+    """Возвращает, сколько текстов перевести не удалось."""
     if not settings.ai_enabled:
-        return
+        return 0
     from .parsing.ai import translate_quote
 
+    failed = 0
     for lang in langs:
-        await translate_quote(quote, lang)
+        failed += await translate_quote(quote, lang)
+    return failed
 
 
 # --------------------------------------------------------------- сборка

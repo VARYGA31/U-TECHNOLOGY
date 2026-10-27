@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import sys
@@ -29,6 +30,7 @@ os.environ["DATA_DIR"] = str(_TMP)
 os.environ.setdefault("OPENAI_API_KEY", "")
 
 from bot import handlers, service, storage  # noqa: E402
+from bot.config import settings  # noqa: E402
 from bot.models import Product, Quote, t  # noqa: E402
 from bot.parsing.extract import extract  # noqa: E402
 from bot.parsing.own_template import parse_own  # noqa: E402
@@ -112,6 +114,79 @@ def check_openai_api() -> None:
 
     check(bool(AiQuote.model_json_schema()) and bool(TrBatch.model_json_schema()),
           "схемы AiQuote и TrBatch валидны")
+
+
+async def check_translation_guard() -> None:
+    """Модель отвечала «оригинал: перевод» и возвращала иероглифы без
+    изменений — в готовом КП оставался китайский. Теперь такой ответ
+    не принимается и уходит на повтор."""
+    from types import SimpleNamespace
+
+    from bot.parsing import ai
+
+    check(ai._strip_echo("驾驶棚", "驾驶棚: Защитный козырёк") == "Защитный козырёк",
+          "эхо «оригинал: перевод» срезается")
+    check(ai._strip_echo("付款条款", "付款条款：Условия оплаты") == "Условия оплаты",
+          "эхо с китайским двоеточием срезается")
+    check(ai._strip_echo("a\nb", "a: Первый\nb: Второй") == "Первый\nВторой",
+          "эхо срезается построчно")
+    check(ai._strip_echo("CT10K", "CT10K") == "CT10K",
+          "совпадающий артикул не ломается")
+
+    check(not ai._is_translated("斗宽: 400", "ru"),
+          "иероглифы без кириллицы → не перевод")
+    check(ai._is_translated("Ширина ковша: 400 мм", "ru"), "русский текст → перевод")
+    check(ai._is_translated("Завод Caeter 卡特", "ru"),
+          "название завода иероглифами допустимо")
+    check(not ai._is_translated("Ширина ковша", "zh"), "кириллица в zh → не перевод")
+
+    # ранее сохранённый брак должен переводиться заново
+    bad = {"zh": "驾驶棚", "ru": "驾驶棚: Защитный козырёк"}
+    check(ai._needs_translation(bad, "ru") and "ru" not in bad,
+          "сохранённый кривой перевод выбрасывается и переводится заново")
+    good = {"zh": "驾驶棚", "ru": "Защитный козырёк"}
+    check(not ai._needs_translation(good, "ru"), "нормальный перевод не трогаем")
+
+    # весь цикл на поддельном клиенте
+    attempts = {"n": 0}
+    mode = {"first": "echo"}
+
+    class FakeResponses:
+        async def parse(self, **kw):
+            attempts["n"] += 1
+            items = json.loads(kw["input"][1]["content"])
+            if attempts["n"] == 1 and mode["first"] == "echo":
+                # «оригинал: перевод» — эхо срезается, повтор не нужен
+                out = [ai.TrItem(key=k, text=f"{v}: Защитный козырёк оператора")
+                       for k, v in items.items()]
+            elif attempts["n"] == 1:
+                # исходник вернулся без изменений — такой ответ отвергаем
+                out = [ai.TrItem(key=k, text=v) for k, v in items.items()]
+            else:
+                out = [ai.TrItem(key=k, text="Защитный козырёк оператора") for k in items]
+            return SimpleNamespace(output_parsed=ai.TrBatch(items=out))
+
+    saved_client, saved_key = ai._client, settings.openai_api_key
+    ai._client = SimpleNamespace(responses=FakeResponses())
+    settings.openai_api_key = "test"
+    try:
+        quote = Quote(products=[Product(name={"zh": "驾驶棚"})])
+        left = await ai.translate_quote(quote, "ru")
+        value = quote.products[0].name.get("ru", "")
+        check(left == 0 and value == "Защитный козырёк оператора",
+              f"эхо срезано с первой попытки: {value!r}")
+        check("：" not in value and ":" not in value, "в сохранённом переводе нет эха")
+
+        attempts["n"] = 0
+        mode["first"] = "untranslated"
+        quote = Quote(products=[Product(name={"zh": "驾驶棚"})])
+        left = await ai.translate_quote(quote, "ru")
+        value = quote.products[0].name.get("ru", "")
+        check(attempts["n"] >= 2 and left == 0 and value == "Защитный козырёк оператора",
+              f"непереведённый ответ отвергнут, повтор дал перевод "
+              f"({attempts['n']} попытки): {value!r}")
+    finally:
+        ai._client, settings.openai_api_key = saved_client, saved_key
 
 
 async def check_ai_request() -> None:
@@ -329,6 +404,9 @@ async def main() -> int:
 
     print("\n2c) Запрос в ИИ не раздувается картинками")
     await check_ai_request()
+
+    print("\n2d) Перевод: эхо «оригинал: перевод» не проходит")
+    await check_translation_guard()
 
     print("\n3) Кнопки")
     bot = FakeBot()

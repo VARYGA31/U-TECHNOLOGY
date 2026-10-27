@@ -12,8 +12,8 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
 from ..config import settings
-from ..models import (Column, Line, Option, Product, Quote, Text, detect_lang,
-                      has_lang, mk)
+from ..models import (_CJK as _CJK_RE, _CYR as _CYR_RE, Column, Line, Option,
+                      Product, Quote, Text, detect_lang, mk)
 
 log = logging.getLogger(__name__)
 
@@ -355,13 +355,28 @@ LANG_NAME = {"ru": "русский", "zh": "中文 (упрощённый)", "en"
 def _tr_prompt(lang: str) -> str:
     return f"""Переведи значения на {LANG_NAME.get(lang, lang)}.
 
-Ответ — items: для каждого входного ключа один объект {{key, text}}.
-Правила:
-- Сохраняй разбиение на строки и формат «Параметр: значение».
-- НЕ переводи модели, артикулы и обозначения: Q, h3, b11, Ast, Wa, S2, S3,
-  SL15, CL1530E-B, HS CODE-номера и подобные.
+Ответ — items: для каждого входного ключа один объект {{key, text}},
+где text — ТОЛЬКО перевод, целиком на языке {LANG_NAME.get(lang, lang)}.
+
+ГЛАВНОЕ, чего делать нельзя:
+- НЕ добавляй оригинал к переводу. Запрещено «оригинал: перевод».
+  Неправильно: «驾驶棚: Защитный козырёк». Правильно: «Защитный козырёк».
+  Неправильно: «付款条款: Условия оплаты». Правильно: «Условия оплаты».
+- НЕ возвращай текст без изменений. Если на входе иероглифы, а перевод
+  нужен на русский — в ответе не должно остаться ни одного иероглифа.
+- НЕ дописывай пояснений, комментариев и исходного написания в скобках.
+
+Как переводить:
+- Многострочный текст переводи построчно, сохраняя число строк.
+- Строку вида «Параметр: значение» верни в том же виде, переведя ОБЕ части:
+  «斗宽: 400 mm» → «Ширина ковша: 400 мм».
+- Названия китайских компаний и заводов тоже переводи или давай латиницей:
+  «卡特重工» → «Caeter Heavy Industry».
+- НЕ переводи обозначения и артикулы: Q, h3, b11, Ast, Wa, S2, S3,
+  SL15, CL1530E-B, CT17, HS CODE-номера.
 - Числа и коды без букв оставляй как есть.
-- Это технический документ — деловой стиль, без пояснений и комментариев.
+- Значки ● (в базе) и ○ (опция) сохраняй.
+- Это технический документ — деловой стиль.
 {GLOSSARY.get(lang, GLOSSARY['en'])}"""
 
 
@@ -394,23 +409,82 @@ def _chunks(items: dict[str, str]) -> list[dict[str, str]]:
     return out
 
 
+def _strip_echo(src: str, out: str) -> str:
+    """Модель любит отвечать «оригинал: перевод» — срезаем оригинал.
+
+    Делаем это и для всего текста целиком, и построчно: в многострочных
+    параметрах эхо появляется в каждой строке.
+    """
+    def one(s: str, o: str) -> str:
+        s, o = s.strip(), o.strip()
+        if not s or s == o:
+            return o
+        for sep in ("：", ": ", ":"):
+            prefix = s + sep
+            if o.startswith(prefix):
+                return o[len(prefix):].strip()
+        return o
+
+    out = one(src, out)
+    src_lines = src.split("\n")
+    out_lines = out.split("\n")
+    if len(src_lines) == len(out_lines) and len(out_lines) > 1:
+        out = "\n".join(one(s, o) for s, o in zip(src_lines, out_lines))
+    return out
+
+
+def _is_translated(out: str, lang: str) -> bool:
+    """Отсеиваем ответы, где модель вернула исходник почти без изменений.
+
+    Немного иероглифов в русском тексте допустимо (название завода),
+    но если кириллицы нет вовсе или иероглифов больше шестой части —
+    это не перевод.
+    """
+    if not out.strip():
+        return False
+    cjk = len(_CJK_RE.findall(out))
+    cyr = len(_CYR_RE.findall(out))
+    letters = max(len(out), 1)
+    if lang == "ru":
+        return cyr > 0 and cjk / letters <= 0.15
+    if lang == "en":
+        return cjk / letters <= 0.05 and cyr / letters <= 0.05
+    if lang == "zh":
+        return cjk > 0 and cyr / letters <= 0.15
+    return True
+
+
 def _needs_translation(text: Text, lang: str) -> bool:
-    if not text or has_lang(text, lang):
+    """Нужен ли перевод. Заодно выбрасывает ранее сохранённый брак.
+
+    Без этого КП, переведённое старой версией («оригинал: перевод»),
+    навсегда оставалось бы кривым: has_lang считал его готовым.
+    """
+    if not text:
         return False
-    src = next((v for v in text.values() if v), "")
-    if not src.strip():
-        return False
-    # числа и коды без букв не переводим
-    return any(ch.isalpha() for ch in src)
+    src = next((v for k, v in text.items() if k != lang and v), "")
+    if not src.strip() or not any(ch.isalpha() for ch in src):
+        return False        # числа и коды без букв не переводим
+    current = text.get(lang)
+    if current:
+        good = (_is_translated(current, lang)
+                and _strip_echo(src, current) == current.strip())
+        if good:
+            return False
+        text.pop(lang, None)
+    return True
 
 
-async def translate_quote(quote: Quote, lang: str) -> None:
-    """Добавляет перевод на lang во все тексты, где его нет. Кэш — в самой модели."""
+async def translate_quote(quote: Quote, lang: str) -> int:
+    """Переводит тексты, где нет lang. Кэш — в самой модели.
+
+    Возвращает число текстов, которые перевести не удалось.
+    """
     if not settings.ai_enabled:
-        return
+        return 0
     texts = [x for x in quote.all_texts() if _needs_translation(x, lang)]
     if not texts:
-        return
+        return 0
 
     by_key: dict[str, Text] = {}
     payload: dict[str, str] = {}
@@ -420,7 +494,7 @@ async def translate_quote(quote: Quote, lang: str) -> None:
         payload[key] = next(v for v in text.values() if v)
 
     pending = payload
-    for _attempt in range(MAX_TRANSLATE_RETRIES + 1):
+    for attempt in range(MAX_TRANSLATE_RETRIES + 1):
         if not pending:
             break
         results = await asyncio.gather(
@@ -431,7 +505,21 @@ async def translate_quote(quote: Quote, lang: str) -> None:
         for r in results:
             if isinstance(r, dict):
                 got.update(r)
+
+        accepted: set[str] = set()
         for key, value in got.items():
-            if key in by_key and value.strip():
-                by_key[key][lang] = value.strip()
-        pending = {k: v for k, v in pending.items() if k not in got}
+            if key not in by_key:
+                continue
+            clean = _strip_echo(pending.get(key, ""), value)
+            # плохой ответ не записываем — пусть уйдёт на повтор
+            if clean and _is_translated(clean, lang):
+                by_key[key][lang] = clean
+                accepted.add(key)
+        pending = {k: v for k, v in pending.items() if k not in accepted}
+        if pending:
+            log.info("перевод на %s: попытка %d, осталось %d из %d",
+                     lang, attempt + 1, len(pending), len(payload))
+    if pending:
+        log.warning("перевод на %s: не удалось перевести %d текстов",
+                    lang, len(pending))
+    return len(pending)
